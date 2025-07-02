@@ -22,6 +22,15 @@ from vs.constants import VS
 from bfs import BFS
 from abc import ABC, abstractmethod
 
+from pathlib import Path
+import joblib
+import numpy as np
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+
+from deap import base, creator, tools, algorithms
 
 ## Classe que define o Agente Rescuer com um plano fixo
 class Rescuer(AbstAgent):
@@ -54,7 +63,7 @@ class Rescuer(AbstAgent):
         # Starts in IDLE state.
         # It changes to ACTIVE when the map arrives
         self.set_state(VS.IDLE)
-
+    
     def save_cluster_csv(self, cluster, cluster_id):
         filename = f"./clusters/cluster{cluster_id}.txt"
         with open(filename, 'w', newline='') as csvfile:
@@ -124,19 +133,80 @@ class Rescuer(AbstAgent):
     
         return [upper_left, upper_right, lower_left, lower_right]
 
+    _SEVERITY_CLF_PATH = Path("models/severity_clf.joblib")
+    _SEVERITY_REG_PATH = Path("models/severity_reg.joblib")
+    
+    def _load_or_train_models(self, X_train = None, y_class = None, y_value = None):
+        if self._SEVERITY_CLF_PATH.exists() and self._SEVERITY_REG_PATH.exists():
+            self.classifier = joblib.load(self._SEVERITY_CLF_PATH)
+            self.regressor  = joblib.load(self._SEVERITY_REG_PATH)
+            return
+
+        num_features = list(range(X_train.shape[1]))
+        preproc = ColumnTransformer(
+            transformers=[("num", StandardScaler(), num_features)],
+            remainder="drop",
+        )
+
+        self.classifier = Pipeline(
+            steps=[("pre", preproc),
+                   ("clf", RandomForestClassifier(n_estimators=150,
+                                                  class_weight="balanced",
+                                                  random_state=42))]
+        )
+        self.regressor = Pipeline(
+            steps=[("pre", preproc),
+                   ("reg", RandomForestRegressor(n_estimators=200,
+                                                 random_state=42))]
+        )
+
+        self.classifier.fit(X_train, y_class)
+        self.regressor.fit(X_train, y_value)
+        joblib.dump(self.classifier, self._SEVERITY_CLF_PATH)
+        joblib.dump(self.regressor,  self._SEVERITY_REG_PATH)
+    
+    @staticmethod
+    def _euclidean(p, q):
+        return math.hypot(p[0]-q[0], p[1]-q[1])
+
+    def _fitness(self, order):
+        dist = penalty = 0
+        # idx2id foi criado dentro sequencing() e salvo em self para uso aqui
+        pts  = [self.victims[self._idx2id[i]][0]     for i in order]
+        sevs = [self.victims[self._idx2id[i]][1][-2] for i in order]
+
+        # distância acumulada
+        for a, b in zip(pts[:-1], pts[1:]):
+            dist += self._euclidean(a, b)
+        # penalidade por severidade e posição
+        for rank, sev in enumerate(sevs, start=1):
+            penalty += rank * sev
+
+        return (dist + penalty,)          # APENAS um tuplo
+
+
     def predict_severity_and_class(self):
         """ @TODO to be replaced by a classifier and a regressor to calculate the class of severity and the severity values.
             This method should add the vital signals(vs) of the self.victims dictionary with these two values.
 
             This implementation assigns random values to both, severity value and class"""
 
-        for vic_id, values in self.victims.items():
+        """for vic_id, values in self.victims.items():
             severity_value = random.uniform(0.1, 99.9)          # to be replaced by a regressor 
             severity_class = random.randint(1, 4)               # to be replaced by a classifier
-            values[1].extend([severity_value, severity_class])  # append to the list of vital signals; values is a pair( (x,y), [<vital signals list>] )
+            values[1].extend([severity_value, severity_class])  # append to the list of vital signals; values is a pair( (x,y), [<vital signals list>] )"""
+        
+        if not hasattr(self, "classifier") or not hasattr(self, "regressor"):
+            raise RuntimeError("Modelos não foram carregados/treinados.")
+
+        for vic_id, (coords, vitals) in self.victims.items():
+            X = np.array(vitals[1:6]).reshape(1, -1)
+            severity_class = int(self.classifier.predict(X)[0])
+            severity_value = float(self.regressor.predict(X)[0])        
+            vitals.extend([severity_value, severity_class])
 
 
-    def sequencing(self):
+    def sequencing(self, n_generations=100, pop_size=80, cxpb=0.7, mutpb=0.2):
         """ Currently, this method sort the victims by the x coordinate followed by the y coordinate
             @TODO It must be replaced by a Genetic Algorithm that finds the possibly best visiting order """
 
@@ -144,14 +214,49 @@ class Rescuer(AbstAgent):
             sequence[0], sequence[1], ...
             A sequence is a dictionary with the following structure: [vic_id]: ((x,y), [<vs>]"""
 
-        new_sequences = []
+        """new_sequences = []
 
         for seq in self.sequences:   # a list of sequences, being each sequence a dictionary
             seq = dict(sorted(seq.items(), key=lambda item: item[1]))
             new_sequences.append(seq)       
             #print(f"{self.NAME} sequence of visit:\n{seq}\n")
 
-        self.sequences = new_sequences
+        self.sequences = new_sequences"""
+
+        vic_ids      = list(self.victims.keys())
+        n            = len(vic_ids)
+        if n <= 1: return
+        self._idx2id = vic_ids
+        id2idx       = {vid: i for i, vid in enumerate(vic_ids)}  # dicionário inverso
+
+        try:
+            creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
+            creator.create("Individual", list, fitness=creator.FitnessMin)
+        except RuntimeError:
+            pass
+
+        toolbox = base.Toolbox()
+        toolbox.register("indices", random.sample, list(range(n)), n)
+        toolbox.register("individual", tools.initIterate,creator.Individual, toolbox.indices)
+        toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+
+        toolbox.register("evaluate", self._fitness)          
+        toolbox.register("mate", tools.cxOrdered)
+        toolbox.register("mutate", tools.mutShuffleIndexes, indpb=0.05)
+        toolbox.register("select", tools.selTournament, tournsize=3)
+
+        pop = toolbox.population(pop_size)
+        
+        algorithms.eaSimple(pop, toolbox, cxpb=cxpb, mutpb=mutpb, ngen=n_generations, verbose=False)
+
+        best_k = tools.selBest(pop, 3)      # 3 melhores rotas
+
+        self.sequences = []
+        for ind in best_k:
+            seq = {self._idx2id[i]: self.victims[self._idx2id[i]] for i in ind}
+            self.sequences.append(seq)
+
+
 
     def planner(self):
         """ A method that calculates the path between victims: walk actions in a OFF-LINE MANNER (the agent plans, stores the plan, and
@@ -208,6 +313,7 @@ class Rescuer(AbstAgent):
             #print(f"{self.NAME} found victims by all explorers:\n{self.victims}")
 
             #@TODO predict the severity and the class of victims' using a classifier
+            self._load_or_train_models() # Carrega modelos para classificação de vítimas
             self.predict_severity_and_class()
 
             #@TODO cluster the victims possibly using the severity and other criteria
