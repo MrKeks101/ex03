@@ -199,12 +199,13 @@ class Rescuer(AbstAgent):
         if not hasattr(self, "classifier") or not hasattr(self, "regressor"):
             raise RuntimeError("Modelos não foram carregados/treinados.")
 
-        for vic_id, (coords, vitals) in self.victims.items():
-            X = np.array(vitals[1:6]).reshape(1, -1)
-            severity_class = int(self.classifier.predict(X)[0])
-            severity_value = float(self.regressor.predict(X)[0])        
-            vitals.extend([severity_value, severity_class])
-
+        with open("output/victim_data.txt", "w", encoding="utf-8") as f:
+            for vic_id, (coords, vitals) in self.victims.items():
+                X = np.array(vitals[1:6]).reshape(1, -1)
+                severity_class = int(self.classifier.predict(X)[0])
+                severity_value = float(self.regressor.predict(X)[0])
+                f.write(f"{vic_id}, {coords[0]}, {coords[1]}, {severity_value}, {severity_class}\n")        
+                vitals.extend([severity_value, severity_class])
 
     def sequencing(self, n_generations=100, pop_size=80, cxpb=0.7, mutpb=0.2):
         """ Currently, this method sort the victims by the x coordinate followed by the y coordinate

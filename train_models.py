@@ -103,7 +103,7 @@ def train_and_save(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Treina e salva os modelos de severidade.")
-    parser.add_argument("--csv",  "-c", default="data/synthetic_vitals_v2.csv",
+    parser.add_argument("--csv",  "-c", default="training_data/training_vitals.csv",
                         help="Caminho do CSV de treino (default: %(default)s)")
     parser.add_argument("--out",  "-o", default="models",
                         help="Diretório de saída (default: %(default)s)")
