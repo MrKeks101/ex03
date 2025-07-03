@@ -48,6 +48,8 @@ class Explorer(AbstAgent):
         self.map = Map()           # create a map for representing the environment
         self.victims = {}          # a dictionary of found victims: (seq): ((x,y), [<vs>])
                                    # the key is the seq number of the victim,(x,y) the position, <vs> the list of vital signals
+        self.explored_cells = set()
+        self.obstacle_cache = {}
 
         # put the current position - the base - in the map
         self.map.add((self.x, self.y), 1, VS.NO_VICTIM, self.check_walls_and_lim())
@@ -56,6 +58,7 @@ class Explorer(AbstAgent):
 
     def get_next_position(self):
         """ Uses ONLINE-DFS to explore the map
+        """
         """
         position = (self.x,self.y)
         if position not in self.tried_directions:
@@ -73,6 +76,36 @@ class Explorer(AbstAgent):
                     return Explorer.AC_INCR[j]
                 else:
                     self.tried_directions[position].add(j)
+        return None
+        """
+        position = (self.x, self.y)
+
+        # Ignora se já está totalmente explorada
+        if position in self.explored_cells:
+            return None
+
+        # Inicializa estruturas se necessário
+        if position not in self.tried_directions:
+            self.tried_directions[position] = set()
+
+        if position not in self.obstacle_cache:
+            self.obstacle_cache[position] = self.check_walls_and_lim()
+
+        obstacles = self.obstacle_cache[position]
+
+        # Heurística simples: direções "cardinais" em ordem preferencial (ex: cima, direita, baixo, esquerda)
+        preferred_dirs = [0, 2, 4, 6, 1, 3, 5, 7]  # ajuste se quiser outra prioridade
+        number = (self.explorer_number - 1) * 2   # para diversificar entre exploradores
+        rotated_dirs = [(i + number) % 8 for i in preferred_dirs]
+
+        for j in rotated_dirs:
+            if j not in self.tried_directions[position]:
+                self.tried_directions[position].add(j)
+                if obstacles[j] == VS.CLEAR:
+                    return Explorer.AC_INCR[j]
+
+        # Todas direções testadas → célula marcada como explorada
+        self.explored_cells.add(position)
         return None
         
     def explore(self):
