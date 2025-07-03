@@ -180,7 +180,7 @@ class Rescuer(AbstAgent):
             dist += self._euclidean(a, b)
         # penalidade por severidade e posição
         for rank, sev in enumerate(sevs, start=1):
-            penalty += rank * sev
+            penalty += rank * (100 - sev)
 
         return (dist + penalty,)          # APENAS um tuplo
 
